@@ -12,20 +12,20 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 
 def direction(line):
     x, y = line.xy
-    return np.array([x[-1] - x[0], y[-1] - y[0]])
+    return x[-1] - x[0], y[-1] - y[0]
 
 def delta_angle(line1, line2):
-    v1 = direction(line1)
-    v2 = direction(line2)
+    x1, y1 = direction(line1)
+    x2, y2 = direction(line2)
 
-    dot = np.dot(v1, v2)
-    norm = np.linalg.norm(v1) * np.linalg.norm(v2)
+    dot = x1*x2 + y1*y2
+    norm = math.sqrt((x1*x1 + y1*y1) * (x2*x2 + y2*y2))
 
     if norm == 0: # avoids division by zero
         return 0.0
-    
+
     # acute angle 0-90
-    cos_theta = np.clip(dot / norm, -1.0, 1.0)
+    cos_theta = max(-1.0, min(1.0, dot / norm))
     return math.degrees(math.acos(abs(cos_theta)))
 
 def new_angles(G,touch_buffer):
@@ -36,8 +36,8 @@ def new_angles(G,touch_buffer):
         
         if isinstance(touch_point, Point):
             touch_point_b=touch_point.buffer(touch_buffer)
-            cut_a = a.difference(a.difference(touch_point_b)) 
-            cut_b = b.difference(b.difference(touch_point_b))
+            cut_a = a.intersection(touch_point_b)
+            cut_b = b.intersection(touch_point_b)
             cut_b = check_string(cut_b,touch_point)
             cut_a = check_string(cut_a,touch_point)
             angle = delta_angle(cut_a, cut_b)
@@ -176,25 +176,24 @@ def merged_G_angle(H, thresh, attr, enforce_degree2):
 
 
 # main
-def get_dual_dir_con(t_buffer, a_threshold, data, enforce_degree2): #enforce_degree2
-    # data can be either a subgraph (osmnx) or a GeoDataFrame (pyrosm)
-    # define angle treshold and buffer
+def get_dual_dir_con(t_buffer, a_threshold, data, enforce_degree2):
+    # data must be an osmnx graph
+    # define angle threshold and buffer
     # returns the network and the geometry
 
-    if hasattr(data, "nodes"):  # treat as osmnx graph
-        shape_df = ox.graph_to_gdfs(ox.convert.to_undirected(data), nodes=False)
-        shape_df.crs = "epsg:4326"
-        shape_df = shape_df.to_crs(3857)
-        try: 
-            shape_df = momepy.roundabout_simplification(shape_df)
-            print('roundabout simplification applied')
-        except Exception as e: print(e)
-    else:  # treat as GeoDataFrame
-        print('using pyrosm GeoDataFrame')
-        print('WARNING pyrosm does work not that well')
-        shape_df = data.to_crs(3857)
-        if 'osmid' not in shape_df.columns:
-            shape_df['osmid'] = shape_df['id']
+    if not hasattr(data, "nodes"):
+        raise TypeError("data must be an osmnx graph")
+
+    shape_df = ox.graph_to_gdfs(ox.convert.to_undirected(data), nodes=False)
+    shape_df.crs = "epsg:4326"
+    shape_df = shape_df.to_crs(3857)
+    try:
+        shape_df = momepy.roundabout_simplification(shape_df)
+        print('roundabout simplification applied')
+    except Exception as e:
+        print(f'roundabout simplification failed: {e}')
+        if 'edgeUID' not in shape_df.columns:
+            shape_df['edgeUID'] = shape_df.index
 
     # explodes the geometry
     shape_df = shape_df.reset_index().explode('geometry')

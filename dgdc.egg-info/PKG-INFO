@@ -1,0 +1,12 @@
+Metadata-Version: 2.4
+Name: dgdc
+Version: 0.1.0
+Summary: Dual graph continuity analysis for street networks
+Requires-Python: >=3.9
+Requires-Dist: numpy
+Requires-Dist: networkx
+Requires-Dist: shapely
+Requires-Dist: geopandas
+Requires-Dist: pandas
+Requires-Dist: momepy
+Requires-Dist: osmnx
