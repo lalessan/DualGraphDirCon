@@ -11,10 +11,12 @@ import warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 def direction(line):
+    """Return the (dx, dy) direction vector of a LineString."""
     x, y = line.xy
     return x[-1] - x[0], y[-1] - y[0]
 
 def delta_angle(line1, line2):
+    """Acute angle (0–90°) between two LineStrings."""
     x1, y1 = direction(line1)
     x2, y2 = direction(line2)
 
@@ -28,27 +30,29 @@ def delta_angle(line1, line2):
     cos_theta = max(-1.0, min(1.0, dot / norm))
     return math.degrees(math.acos(abs(cos_theta)))
 
-def new_angles(G,touch_buffer):
+def new_angles(G, touch_buffer):
+    """Compute local angles at touch points and set 'new_angle' on each dual edge."""
     for u, v in G.edges():
         a = G.nodes[u]['geometry']
         b = G.nodes[v]['geometry']
         touch_point = a.intersection(b)
-        
+
         if isinstance(touch_point, Point):
-            touch_point_b=touch_point.buffer(touch_buffer)
+            touch_point_b = touch_point.buffer(touch_buffer)
             cut_a = a.intersection(touch_point_b)
             cut_b = b.intersection(touch_point_b)
-            cut_b = check_string(cut_b,touch_point)
-            cut_a = check_string(cut_a,touch_point)
+            cut_b = check_string(cut_b, touch_point)
+            cut_a = check_string(cut_a, touch_point)
             angle = delta_angle(cut_a, cut_b)
-        else: # not a point (e.g parralel lines)
+        else: # not a point (e.g parallel lines)
             angle = delta_angle(a, b)
-        
+
         G[u][v]['new_angle'] = angle
-    
+
     return G
 
-def check_string(l,p):
+def check_string(l, p):
+    """Return the segment of a MultiLineString that touches point p, or l if already a LineString."""
     if isinstance(l, MultiLineString):
         for i in l.geoms:
             if i.touches(p):
@@ -56,8 +60,8 @@ def check_string(l,p):
     else: 
         return l
     
-# For cleaning chains
 def combine(elements):
+    """Flatten a mixed list of ints and lists into a single list."""
     result_list = []
     for item in elements:
         if isinstance(item, int):
@@ -68,6 +72,7 @@ def combine(elements):
 
 
 def clean_chains(G_primal):
+    """Iteratively merge degree-2 nodes by collapsing them into a single edge."""
     while True:
         nodes_to_remove = []
         
@@ -97,6 +102,7 @@ def clean_chains(G_primal):
 
 
 def split_until_degree_2(G, attr):
+    """Remove edges from high-degree nodes (keeping the 2 most similar) until all nodes have degree ≤ 2."""
     G = G.copy()
 
     changed = True
@@ -122,7 +128,8 @@ def split_until_degree_2(G, attr):
 
 
 
-def merged_G_angle(H, thresh, attr, enforce_degree2): 
+def merged_G_angle(H, thresh, attr, enforce_degree2):
+    """Merge dual-graph nodes with similar angles (within thresh) into single nodes."""
     filtered_H = H.copy()
 
     # Create components by removing edges with non similar angle
@@ -175,11 +182,21 @@ def merged_G_angle(H, thresh, attr, enforce_degree2):
 
 
 
-# main
 def get_dual_dir_con(t_buffer, a_threshold, data, enforce_degree2):
-    # data must be an osmnx graph
-    # define angle threshold and buffer
-    # returns the network and the geometry
+    """Build the dual continuity graph from an osmnx graph.
+
+    Args:
+        t_buffer: buffer radius (meters) around touch points for local angle computation.
+        a_threshold: max angle (degrees) for two streets to be considered continuous.
+        data: osmnx graph.
+        enforce_degree2: if True, split merged components so no node exceeds degree 2.
+
+    Returns:
+        gdf_merged: GeoDataFrame of merged dual nodes with degree and length.
+        H: merged dual graph (networkx).
+        shape_exploded_df: exploded primal edge GeoDataFrame.
+        lines: primal edge GeoDataFrame after chain cleaning.
+    """
 
     if not hasattr(data, "nodes"):
         raise TypeError("data must be an osmnx graph")
