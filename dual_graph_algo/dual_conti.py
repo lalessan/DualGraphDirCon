@@ -1,13 +1,14 @@
 import numpy as np
 import math
 import networkx as nx
-from shapely.geometry import Point, MultiLineString, MultiLineString
+from shapely.geometry import Point, MultiLineString
 import geopandas as gpd
 import pandas as pd
 from shapely.ops import linemerge
 import momepy
 import osmnx as ox
-
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 def direction(line):
     x, y = line.xy
@@ -48,7 +49,7 @@ def new_angles(G,touch_buffer):
     return G
 
 def check_string(l,p):
-    if type(l) == MultiLineString:
+    if isinstance(l, MultiLineString):
         for i in l.geoms:
             if i.touches(p):
                 return i
@@ -96,21 +97,29 @@ def clean_chains(G_primal):
 
 
 def split_until_degree_2(G, attr):
-    """
-    Split G by repeatedly removing the edge with the largest `attr`
-    until all nodes have degree <= 2.
-    """
     G = G.copy()
-    while True:
-        degrees = dict(G.degree())
-        if max(degrees.values(), default=0) <= 2:
-            break
 
-        # remove edge with largest angle
-        u, v, a = max(G.edges(data=True), key=lambda x: x[2][attr])
-        G.remove_edge(u, v)
+    changed = True
+    while changed:
+        changed = False
+
+        for n in list(G.nodes()):
+            edges = list(G.edges(n, data=True))
+            if len(edges) <= 2:
+                continue
+
+            # keep 2 smallest attr (most similar)
+            edges_sorted = sorted(edges, key=lambda e: e[2][attr])
+            to_remove = edges_sorted[2:]
+
+            for u, v, _ in to_remove:
+                if G.has_edge(u, v):
+                    G.remove_edge(u, v)
+                    changed = True
 
     return [G.subgraph(c).copy() for c in nx.connected_components(G)]
+
+
 
 
 def merged_G_angle(H, thresh, attr, enforce_degree2): 
@@ -122,6 +131,8 @@ def merged_G_angle(H, thresh, attr, enforce_degree2):
     geometries = nx.get_node_attributes(H, "geometry")
     mapping = {}
     geom_map = {}
+    uid_map = {}
+    edge_uids = nx.get_node_attributes(H, "edgeUID")
 
     for comp_nodes in components:
         comp = filtered_H.subgraph(comp_nodes).copy()
@@ -145,8 +156,20 @@ def merged_G_angle(H, thresh, attr, enforce_degree2):
             if lines:
                 geom_map[mean_node] = linemerge(MultiLineString(lines))
 
+            uids = []
+            for n in nodes:
+                val = edge_uids.get(n)
+                if val is None:
+                    pass
+                elif isinstance(val, list):
+                    uids.extend(val)
+                else:
+                    uids.append(val)
+            uid_map[mean_node] = uids
+
     merged_H = nx.relabel_nodes(H, mapping)
     nx.set_node_attributes(merged_H, geom_map, "geometry")
+    nx.set_node_attributes(merged_H, uid_map, "edgeUID")
 
     return merged_H
 
@@ -159,14 +182,16 @@ def get_dual_dir_con(t_buffer, a_threshold, data, enforce_degree2): #enforce_deg
     # returns the network and the geometry
 
     if hasattr(data, "nodes"):  # treat as osmnx graph
-        print('osmnx graph')
         shape_df = ox.graph_to_gdfs(ox.convert.to_undirected(data), nodes=False)
         shape_df.crs = "epsg:4326"
         shape_df = shape_df.to_crs(3857)
-        shape_df = momepy.roundabout_simplification(shape_df)
+        try: 
+            shape_df = momepy.roundabout_simplification(shape_df)
+            print('roundabout simplification applied')
+        except Exception as e: print(e)
     else:  # treat as GeoDataFrame
         print('using pyrosm GeoDataFrame')
-        print('WARNING pyrosm does work not that well?')
+        print('WARNING pyrosm does work not that well')
         shape_df = data.to_crs(3857)
         if 'osmid' not in shape_df.columns:
             shape_df['osmid'] = shape_df['id']
@@ -174,9 +199,10 @@ def get_dual_dir_con(t_buffer, a_threshold, data, enforce_degree2): #enforce_deg
     # explodes the geometry
     shape_df = shape_df.reset_index().explode('geometry')
     u = shape_df.union_all()
-    i = u.intersection(u)
+    # i = u.intersection(u) # old version
+    i = u
     out = gpd.GeoDataFrame(geometry=gpd.GeoSeries(i, crs=shape_df.crs).explode()).reset_index(drop=True)
-    shape_exploded_df = out.sjoin(shape_df[['osmid', 'geometry']], how="left", predicate="intersects")
+    shape_exploded_df = out.sjoin(shape_df[['osmid', 'geometry','edgeUID']], how="left", predicate="intersects")
     shape_exploded_df = shape_exploded_df.drop_duplicates(subset=['geometry'])
     shape_exploded_df = shape_exploded_df.reset_index(drop=True)
     shape_exploded_df['id'] = shape_exploded_df.index
@@ -188,7 +214,7 @@ def get_dual_dir_con(t_buffer, a_threshold, data, enforce_degree2): #enforce_deg
 
     # compute angles 
     G_dual = momepy.gdf_to_nx(lines , approach='dual', multigraph=False, angles=False)
-    G_dual=new_angles(G_dual,touch_buffer=t_buffer)
+    G_dual = new_angles(G_dual,touch_buffer=t_buffer)
 
     # merges
     H = merged_G_angle(G_dual,thresh=a_threshold,attr='new_angle',enforce_degree2=enforce_degree2)
@@ -197,6 +223,7 @@ def get_dual_dir_con(t_buffer, a_threshold, data, enforce_degree2): #enforce_deg
     df_nodes = pd.DataFrame.from_dict(dict(H.nodes(data=True)), orient='index')
     gdf_merged = gpd.GeoDataFrame(df_nodes, geometry='geometry')
     gdf_merged['degree']=np.array([d for n, d in H.degree()])
+    gdf_merged['degree_log'] = gdf_merged.degree.apply(lambda x: np.log10(x) if x > 0 else 0)
     gdf_merged['length'] = gdf_merged.geometry.length
 
     return gdf_merged, H, shape_exploded_df, lines
